@@ -5,7 +5,7 @@ import org.neo4j.procedure.*;
 import org.neo4j.values.storable.PointValue;
 
 import java.util.HashMap;
-import java.util.PriorityQueue;
+import java.util.TreeSet;
 import java.util.stream.Stream;
 
 public class RoutingAStart {
@@ -26,7 +26,6 @@ public class RoutingAStart {
 
     //@Context
     //public Log log;
-
     @Procedure(value = "londonSafeTravel.route", mode = Mode.READ)
     @Description("Finds the optimal path between two POINTS")
     public Stream<HopRecord> route(
@@ -35,18 +34,31 @@ public class RoutingAStart {
             @Name("crossTimeField") String crossTimeField,
             @Name("maxSpeed") double maxspeed
     ) {
-
+        return route2(start, end, crossTimeField, maxspeed, 1.0);
+    }
+    @Procedure(value = "londonSafeTravel.route.anytime", mode = Mode.READ)
+    @Description("Finds the sub-optimal path between two POINTS")
+    public Stream<HopRecord> route2(
+            @Name("start") Node start,
+            @Name("end") Node end,
+            @Name("crossTimeField") String crossTimeField,
+            @Name("maxSpeed") double maxspeed,
+            @Name("w") double weight
+    ) {
         if(!start.hasLabel(POINT))
             throw new IllegalArgumentException("`start' does not have `Point' as a label");
 
         if(!end.hasLabel(POINT))
             throw new IllegalArgumentException("`end' does not have `Point' as a label");
 
-        PriorityQueue<RouteNode> openSetHeap = new PriorityQueue<>();
-        HashMap<Long, RouteNode> openSet = new HashMap<>();
-        HashMap<Long, RouteNode> closedSet = new HashMap<>();
+        if(weight < 1.0 || weight == Double.POSITIVE_INFINITY)
+            throw new IllegalArgumentException("`weight' must be in [1, +Infinity)");
 
-        var startNode = new RouteNode(new Cost(0, heuristic(start, end,maxspeed)), start);
+        TreeSet<RouteNode> openSetHeap = new TreeSet<>();
+        HashMap<Long, RouteNode> openSet = new HashMap<>(0xffff, 0.666f);
+        HashMap<Long, RouteNode> closedSet = new HashMap<>(0x12effff, 0.666f); // Trust the Science!
+
+        var startNode = new RouteNode(new Cost(0, weight * heuristic(start, end, maxspeed)), start);
         openSetHeap.add(startNode);
         openSet.put(startNode.getId(), startNode);
 
@@ -55,17 +67,17 @@ public class RoutingAStart {
             assert (openSet.size() == openSetHeap.size());
 
             // Get current node
-            current = openSetHeap.poll();
-            openSet.remove(current.getId());
+            current = openSetHeap.pollFirst(); // O(log n)
+            openSet.remove(current.getId()); // ~O(1)
 
             // Move from open to closed
-            closedSet.put(current.getId(), current);
+            closedSet.put(current.getId(), current); // ~O(1)
 
             // Found the solution HALT!
             if(current.getId() == getIdOf(end))
                 break;
 
-            var hops = current.node.getRelationships(Direction.OUTGOING, CONNECTS);
+            var hops = current.node.getRelationships(Direction.OUTGOING, CONNECTS); // O(1), I hope?
 
             for(var way : hops) {
                 // NO ENTRY IN HERE!
@@ -78,7 +90,7 @@ public class RoutingAStart {
                 final long successorId = getIdOf(successor);
 
                 // cost for this edge
-                double crossTime = crossTime(way, current.node, successor,maxspeed);
+                double crossTime = crossTime(way, current.node, successor, maxspeed);
 
                 // Adjust for minor roads
                 if(crossTimeField.equals("crossTimeMotorVehicle")) {
@@ -94,42 +106,43 @@ public class RoutingAStart {
                 // cost function
                 double travelTime = current.cost.g + crossTime;
 
+                boolean toInsert = true;
+
                 // if in open list and g' < g
-                var in_open = openSet.get(successorId);
-                if(in_open != null && travelTime < in_open.cost.g) {
-                    // Iterate over the heap and find it
-//                    RouteNode target = null;
-//                    for(RouteNode t : openSetHeap) {
-//                        if(t.getId() != successorId)
-//                            continue;
-//
-//                        target = t;
-//                        break;
-//                    }
-//
-//                    assert (target != null);
-
-                    openSetHeap.remove(in_open);
-                    openSet.remove(successorId);
-
-                    in_open = null;
+                RouteNode routeHop = openSet.get(successorId); // ~O(1)
+                if(routeHop != null) {
+                    if(travelTime < routeHop.cost.g) {
+                        openSetHeap.remove(routeHop); // O(log n)
+                        openSet.remove(successorId); // ~O(1)
+                    } else
+                        toInsert = false;
                 }
 
                 // if in closed and g' < g
-                var in_close = closedSet.get(successorId);
-                if(in_close != null && travelTime < in_close.cost.g) {
-                    closedSet.remove(successorId);
-                    in_close = null;
+                if(routeHop == null) {
+                    routeHop = closedSet.get(successorId);
+                    if (routeHop != null)
+                        if(travelTime < routeHop.cost.g) {
+                            closedSet.remove(successorId); // O(1)
+                            //toInsert = true;
+                        } else
+                            toInsert = false;
                 }
+
+                if(! toInsert)
+                    continue;
+
+                if(routeHop == null)
+                    routeHop = new RouteNode();
 
                 // We found a better path OR We first visited this node!
-                if(in_close == null && in_open == null) {
-                    Cost newCost = new Cost(travelTime, heuristic(successor, end, maxspeed));
-                    var newNode = new RouteNode(newCost, successor, current.getId());
+                routeHop.cost.g = travelTime;
+                routeHop.cost.h = weight * heuristic(successor, end, maxspeed);
+                routeHop.node = successor;
+                routeHop.parent = current.getId();
 
-                    openSet.put(successorId, newNode);
-                    openSetHeap.add(newNode);
-                }
+                openSet.put(successorId, routeHop);
+                openSetHeap.add(routeHop);
             }
         }
 
@@ -192,6 +205,10 @@ public class RoutingAStart {
             this.h = h;
         }
 
+        public Cost() {
+
+        }
+
         @Override
         public int compareTo(Cost b) {
             return Double.compare(g + h, b.g + b.h);
@@ -214,9 +231,9 @@ public class RoutingAStart {
             this.parent = parent;
         }
 
-        //public void setParent(long parent) {
-        //    this.parent = parent;
-        //}
+        public RouteNode() {
+            this.cost = new Cost();
+        }
 
         @Override
         public int compareTo(RouteNode o) {
