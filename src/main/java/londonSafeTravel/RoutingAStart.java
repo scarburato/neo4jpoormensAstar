@@ -1,12 +1,13 @@
 package londonSafeTravel;
 
 import org.neo4j.graphdb.*;
+import org.neo4j.logging.Log;
 import org.neo4j.procedure.*;
 import org.neo4j.values.storable.PointValue;
 
-import java.util.HashMap;
-import java.util.TreeSet;
+import java.util.*;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 public class RoutingAStart {
     static final double MPH_TO_MS = 0.44704;
@@ -24,8 +25,9 @@ public class RoutingAStart {
         put("service", 2.4);
     }};
 
-    //@Context
-    //public Log log;
+    @Context
+    public Log log;
+
     @Procedure(value = "londonSafeTravel.route", mode = Mode.READ)
     @Description("Finds the optimal path between two POINTS")
     public Stream<HopRecord> route(
@@ -61,6 +63,8 @@ public class RoutingAStart {
         var startNode = new RouteNode(new Cost(0, weight * heuristic(start, end, maxspeed)), start);
         openSetHeap.add(startNode);
         openSet.put(startNode.getId(), startNode);
+
+        log.info("Starting route from " + getIdOf(start) + "\tto " + getIdOf(end));
 
         RouteNode current = null;
         while(! openSet.isEmpty()) {
@@ -146,28 +150,38 @@ public class RoutingAStart {
             }
         }
 
+        log.info(
+                "A* terminated in " + current.getId() +
+                "\topenSet size: " + openSet.size() + "\tclosedSet size: " + closedSet.size()
+        );
+
         if(current.getId() != getIdOf(end))
             return Stream.<HopRecord>builder().build();
 
-        long i = 0;
-        Stream.Builder<HopRecord> hops = Stream.builder();
+        // Java non-sense
+        final RouteNode finalCurrent = current;
+        return StreamSupport.stream(Spliterators.spliteratorUnknownSize(new Iterator<>() {
+            long i = 0;
+            RouteNode step = finalCurrent;
 
-        for(
-                RouteNode step = current;
-                step.getId() != getIdOf(start);
-                step = closedSet.get(step.parent)
-        ) {
-            var record = new HopRecord();
-            record.index = i;
-            record.time = step.cost.g;
-            record.node = step.node;
+            @Override
+            public boolean hasNext() {
+                return step.getId() != getIdOf(start);
+            }
 
-            hops.add(record);
+            @Override
+            public HopRecord next() {
+                var record = new HopRecord();
+                record.index = i;
+                record.time = step.cost.g;
+                record.node = step.node;
 
-            i++;
-        }
+                step = closedSet.get(step.parent);
+                i++;
 
-        return hops.build();
+                return record;
+            }
+        }, Spliterator.IMMUTABLE), false);
     }
 
     private static double distance(Node a, Node b) {
