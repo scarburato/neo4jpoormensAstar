@@ -13,6 +13,7 @@ public class RoutingAStart {
     static final double MPH_TO_MS = 0.44704;
     static final Label POINT = Label.label("Point");
     static final RelationshipType CONNECTS = RelationshipType.withName("CONNECTS");
+    static final RelationshipType IS_DISRUPTED = RelationshipType.withName("IS_DISRUPTED");
 
     static final HashMap<String, Double> timeWeights = new HashMap<>() {{
         put("primary", 1.2);
@@ -23,6 +24,14 @@ public class RoutingAStart {
         put("residential", 2.0);
         put("living_street", 2.4);
         put("service", 2.4);
+    }};
+
+    static final HashMap<String, Double> disruptionWeights = new HashMap<>(){{
+        // [ 'Minimal', 'Moderate', 'Serious', 'Severe' ]
+        put("Minimal", 1.1);
+        put("Moderate", 2.0);
+        put("Serious", 3.333);
+        put("Severe", 6.0);
     }};
 
     @Context
@@ -57,8 +66,8 @@ public class RoutingAStart {
             throw new IllegalArgumentException("`weight' must be in [1, +Infinity)");
 
         TreeSet<RouteNode> openSetHeap = new TreeSet<>();
-        HashMap<Long, RouteNode> openSet = new HashMap<>(0xffff, 0.666f);
-        HashMap<Long, RouteNode> closedSet = new HashMap<>(0x12effff, 0.666f); // Trust the Science!
+        HashMap<Long, RouteNode> openSet = new HashMap<>(0xfff, 0.666f);
+        HashMap<Long, RouteNode> closedSet = new HashMap<>(0xfeee, 0.666f); // Trust the Science!
 
         var startNode = new RouteNode(new Cost(0, weight * heuristic(start, end, maxspeed)), start);
         openSetHeap.add(startNode);
@@ -95,6 +104,24 @@ public class RoutingAStart {
 
                 // cost for this edge
                 double crossTime = crossTime(way, current.node, successor, maxspeed);
+
+                // Look for disruption
+                var disruptionEdges = successor.getRelationships(Direction.OUTGOING, IS_DISRUPTED);
+                for(var disruptionEdge : disruptionEdges) {
+                    Node disruption = disruptionEdge.getEndNode();
+                    if(! disruption.hasProperty("severity")) {
+                        log.warn("Disruption " + disruption.getElementId() + " has no severity!!");
+                        continue;
+                    }
+
+                    Double dw = disruptionWeights.get((String)disruption.getProperty("severity"));
+                    if(dw == null) {
+                        log.warn("Uknown severity " + disruption.getProperty("severity"));
+                        continue;
+                    }
+
+                    crossTime *= dw;
+                }
 
                 // Adjust for minor roads
                 if(crossTimeField.equals("crossTimeMotorVehicle")) {
