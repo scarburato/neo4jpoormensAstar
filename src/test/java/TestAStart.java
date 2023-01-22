@@ -47,7 +47,7 @@ public class TestAStart {
             session.run("""
 MATCH (s:Point{id:99912})
 MATCH (e:Point{id:1150824164})
-CALL londonSafeTravel.route(s, e, "crossTimeFoot", 70.0)
+CALL londonSafeTravel.route(s, e, "crossTimeFoot", true, 70.0)
 YIELD index, node, time
 RETURN index, node, time
 ORDER BY index DESCENDING

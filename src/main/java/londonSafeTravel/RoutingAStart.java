@@ -43,9 +43,10 @@ public class RoutingAStart {
             @Name("start") Node start,
             @Name("end") Node end,
             @Name("crossTimeField") String crossTimeField,
+            @Name("considerDisruptions") boolean considerDisruptions,
             @Name("maxSpeed") double maxspeed
     ) {
-        return route2(start, end, crossTimeField, maxspeed, 1.0);
+        return route2(start, end, crossTimeField, considerDisruptions, maxspeed, 1.0);
     }
     @Procedure(value = "londonSafeTravel.route.anytime", mode = Mode.READ)
     @Description("Finds the sub-optimal path between two POINTS")
@@ -53,6 +54,7 @@ public class RoutingAStart {
             @Name("start") Node start,
             @Name("end") Node end,
             @Name("crossTimeField") String crossTimeField,
+            @Name("considerDisruptions") boolean considerDisruptions,
             @Name("maxSpeed") double maxspeed,
             @Name("w") double weight
     ) {
@@ -67,9 +69,10 @@ public class RoutingAStart {
 
         TreeSet<RouteNode> openSetHeap = new TreeSet<>();
         HashMap<Long, RouteNode> openSet = new HashMap<>(0xfff, 0.666f);
-        HashMap<Long, RouteNode> closedSet = new HashMap<>(0xfeee, 0.666f); // Trust the Science!
+        HashMap<Long, RouteNode> closedSet = new HashMap<>(0xfeee, 0.666f);
 
-        var startNode = new RouteNode(new Cost(0, weight * heuristic(start, end, maxspeed)), start);
+        var startNode = new RouteNode(
+                new Cost(0, weight * heuristic(start, end, maxspeed)), start);
         openSetHeap.add(startNode);
         openSet.put(startNode.getId(), startNode);
 
@@ -106,22 +109,8 @@ public class RoutingAStart {
                 double crossTime = crossTime(way, current.node, successor, maxspeed);
 
                 // Look for disruption
-                var disruptionEdges = successor.getRelationships(Direction.OUTGOING, IS_DISRUPTED);
-                for(var disruptionEdge : disruptionEdges) {
-                    Node disruption = disruptionEdge.getEndNode();
-                    if(! disruption.hasProperty("severity")) {
-                        log.warn("Disruption " + disruption.getElementId() + " has no severity!!");
-                        continue;
-                    }
-
-                    Double dw = disruptionWeights.get((String)disruption.getProperty("severity"));
-                    if(dw == null) {
-                        log.warn("Uknown severity " + disruption.getProperty("severity"));
-                        continue;
-                    }
-
-                    crossTime *= dw;
-                }
+                if(considerDisruptions)
+                    crossTime = considerDisruptions(successor, crossTime);
 
                 // Adjust for minor roads
                 if(crossTimeField.equals("crossTimeMotorVehicle")) {
@@ -211,6 +200,36 @@ public class RoutingAStart {
         }, Spliterator.IMMUTABLE), false);
     }
 
+    private double considerDisruptions(Node successor, double crossTime) {
+        var disruptionEdges = successor.getRelationships(Direction.OUTGOING, IS_DISRUPTED);
+        for (var disruptionEdge : disruptionEdges) {
+            Node disruption = disruptionEdge.getEndNode();
+            if (!disruption.hasProperty("severity")) {
+                log.warn("Disruption " + disruption.getElementId() + " has no severity!!");
+                continue;
+            }
+
+            Double dw = disruptionWeights.get((String) disruption.getProperty("severity"));
+            if (dw == null) {
+                log.warn("Uknown severity " + disruption.getProperty("severity"));
+                continue;
+            }
+
+            if ((Boolean) disruption.getProperty("closed", false)) {
+                log.debug(
+                        "Closed road at " + disruption.getElementId() +
+                        "\tPoint " + successor.getElementId()
+                );
+
+                return crossTime * 25;
+            }
+
+            crossTime *= dw;
+        }
+
+        return crossTime;
+    }
+
     private static double distance(Node a, Node b) {
         PointValue posA = (PointValue) a.getProperty("coord");
         PointValue posB = (PointValue) b.getProperty("coord");
@@ -222,7 +241,7 @@ public class RoutingAStart {
 
     private static double heuristic(Node a, Node b, double maxspeed) {
         // Maximum speed limit in UK: 70mph
-        return (distance(a, b) / (maxspeed + 15) * MPH_TO_MS);
+        return (distance(a, b) / (maxspeed + 5) * MPH_TO_MS);
     }
 
     private static double crossTime(Relationship way, Node a, Node b, double maxspeed) {
@@ -246,9 +265,7 @@ public class RoutingAStart {
             this.h = h;
         }
 
-        public Cost() {
-
-        }
+        public Cost() {}
 
         @Override
         public int compareTo(Cost b) {
